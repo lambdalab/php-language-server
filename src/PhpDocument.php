@@ -10,7 +10,8 @@ use LanguageServer\NodeVisitor\{
     DocBlockParser,
     DefinitionCollector,
     ColumnCalculator,
-    ReferencesCollector
+    ReferencesCollector,
+    NodeLocFinder
 };
 use LanguageServer\Index\Index;
 use PhpParser\{Error, ErrorHandler, Node, NodeTraverser};
@@ -94,6 +95,14 @@ class PhpDocument
      * @var Diagnostic[]
      */
     private $diagnostics;
+
+    
+    /*
+     * @var Node[]
+     */
+    public $positions;
+
+    public $lines;
 
     /**
      * @param string             $uri                The URI of the document
@@ -217,6 +226,16 @@ class PhpDocument
             }
 
             $this->stmts = $stmts;
+
+            $traverser = new NodeTraverser;
+            $nodeLocFinder = new NodeLocFinder($content);
+            $traverser->addVisitor($nodeLocFinder);
+
+            $traverser->traverse($stmts);
+            $this->positions = $nodeLocFinder->positions;
+
+            $lines = explode("\n", $content);
+            $this->lines = array_map('strlen', $lines);
         }
     }
 
@@ -284,11 +303,24 @@ class PhpDocument
         if ($this->stmts === null) {
             return null;
         }
+        $offset = $this->fastNodeOffset($position);
+        if (isset($this->positions[$offset])) {
+          return $this->positions[$offset];
+        }
+        return null;
+        /*
         $traverser = new NodeTraverser;
         $finder = new NodeAtPositionFinder($position);
         $traverser->addVisitor($finder);
         $traverser->traverse($this->stmts);
         return $finder->node;
+        */
+    }
+
+    private function fastNodeOffset(Position $position) {
+        $slice = array_slice($this->lines, 0, $position->line);
+        $offset = array_sum($slice) + count($slice) + $position->character;
+        return $offset;
     }
 
     /**
