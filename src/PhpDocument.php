@@ -56,9 +56,9 @@ class PhpDocument
     /**
      * The AST of the document
      *
-     * @var Node
+     * @var Node\SourceFileNode
      */
-    private $stmts;
+    private $sourceFileNode;
 
     /**
      * Map from fully qualified name (FQN) to Definition
@@ -176,7 +176,7 @@ class PhpDocument
             $this->index->addReferenceUri($fqn, $this->uri);
         }
 
-        $this->stmts = $treeAnalyzer->getStmts();
+        $this->sourceFileNode = $treeAnalyzer->getSourceFileNode();
     }
 
     /**
@@ -225,11 +225,11 @@ class PhpDocument
     /**
      * Returns the AST of the document
      *
-     * @return Node | null
+     * @return Node\SourceFileNode|null
      */
-    public function getStmts()
+    public function getSourceFileNode()
     {
-        return $this->stmts;
+        return $this->sourceFileNode;
     }
 
     /**
@@ -240,12 +240,12 @@ class PhpDocument
      */
     public function getNodeAtPosition(Position $position)
     {
-        if ($this->stmts === null) {
+        if ($this->sourceFileNode === null) {
             return null;
         }
 
-        $offset = $position->toOffset($this->stmts->getFileContents());
-        $node = $this->stmts->getDescendantNodeAtPosition($offset);
+        $offset = $position->toOffset($this->sourceFileNode->getFileContents());
+        $node = $this->sourceFileNode->getDescendantNodeAtPosition($offset);
         if ($node !== null && $node->getStart() > $offset) {
             return null;
         }
