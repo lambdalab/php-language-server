@@ -10,7 +10,8 @@ use LanguageServer\NodeVisitor\{
     DocBlockParser,
     DefinitionCollector,
     ColumnCalculator,
-    ReferencesCollector
+    ReferencesCollector,
+    DynamicLoader
 };
 use LanguageServer\Index\Index;
 use PhpParser\{Error, ErrorHandler, Node, NodeTraverser};
@@ -197,6 +198,8 @@ class PhpDocument
             // Collect all definitions
             $definitionCollector = new DefinitionCollector($this->definitionResolver);
             $traverser->addVisitor($definitionCollector);
+
+						$traverser->addVisitor(new DynamicLoader($definitionCollector, $this->definitionResolver));
 
             // Collect all references
             $referencesCollector = new ReferencesCollector($this->definitionResolver);
