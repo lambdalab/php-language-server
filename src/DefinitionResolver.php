@@ -486,13 +486,31 @@ class DefinitionResolver
                 } else {
                     $classFqn = substr((string)$t->getFqsen(), 1);
                 }
-                $fqn = $classFqn . '->' . $expr->name;
+                $memberSuffix = '->' . $expr->name;
                 if ($expr instanceof Node\Expr\MethodCall) {
-                    $fqn .= '()';
+                    $memberSuffix .= '()';
                 }
-                $def = $this->index->getDefinition($fqn);
-                if ($def !== null) {
-                    return $def->type;
+
+                // Find the right class that implements the member
+                $implementorFqns = [$classFqn];
+                while ($implementorFqn = array_shift($implementorFqns)) {
+                    // If the member FQN exists, return it
+                    $def = $this->index->getDefinition($implementorFqn . $memberSuffix);
+                    if ($def) {
+                        return $def->type;
+                    }
+                    // Get Definition of implementor class
+                    $implementorDef = $this->index->getDefinition($implementorFqn);
+                    // If it doesn't exist, return the initial guess
+                    if ($implementorDef === null) {
+                        break;
+                    }
+                    // Repeat for parent class
+                    if ($implementorDef->extends) {
+                        foreach ($implementorDef->extends as $extends) {
+                            $implementorFqns[] = $extends;
+                        }
+                    }
                 }
             }
         }
