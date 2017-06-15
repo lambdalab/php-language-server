@@ -26,6 +26,8 @@ class DefinitionResolver
      */
     private $prettyPrinter;
 
+    private $fqn2Type;
+
     /**
      * @param ReadableIndex $index
      */
@@ -427,6 +429,14 @@ class DefinitionResolver
      */
     public function resolveExpressionNodeToType(Node\Expr $expr): Type
     {
+        // Cache
+        if (isset($expr->fqn)) {
+          $fqn = $expr->fqn;
+          if (isset($fqn2type[$fqn])) {
+            return $fqn2type[$fqn]; 
+          }
+        }
+
         if ($expr instanceof Node\Expr\Variable || $expr instanceof Node\Expr\ClosureUse) {
             if ($expr instanceof Node\Expr\Variable && $expr->name === 'this') {
                 return new Types\This;
@@ -447,7 +457,9 @@ class DefinitionResolver
                 return new Types\Mixed;
             }
             $fqn = (string)($expr->getAttribute('namespacedName') ?? $expr->name) . '()';
+            $expr->fqn = $fqn;
             $def = $this->index->getDefinition($fqn, true);
+            $this->fqn2type[$fqn] = $def->type;
             if ($def !== null) {
                 return $def->type;
             }
@@ -461,7 +473,9 @@ class DefinitionResolver
             }
             // Resolve constant
             $fqn = (string)($expr->getAttribute('namespacedName') ?? $expr->name);
+            $expr->fqn = $fqn;
             $def = $this->index->getDefinition($fqn, true);
+            $this->fqn2type[$fqn] = $def->type;
             if ($def !== null) {
                 return $def->type;
             }
@@ -535,6 +549,8 @@ class DefinitionResolver
             if ($def === null) {
                 return new Types\Mixed;
             }
+            $expr->fqn = $fqn;
+            $this->fqn2type[$fqn] = $def->type;
             return $def->type;
         }
         if ($expr instanceof Node\Expr\New_) {
