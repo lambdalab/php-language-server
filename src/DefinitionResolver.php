@@ -26,6 +26,16 @@ class DefinitionResolver
      */
     private $prettyPrinter;
 
+
+    public $autoloadInfo;
+
+    // The followings are autoloading properties.
+    public $autoloadLibraries;
+    public $autoloadClasses;
+    public $autoloadModels;
+    public $autoloadLanguages;
+
+
     /**
      * @param ReadableIndex $index
      */
