@@ -17,15 +17,68 @@ class DynamicLoader extends NodeVisitorAbstract
 {
     public $definitionCollector;
     public $prettyPrinter;
+    public $definitionResolver;
+    
+    private $collectAutoload;
 
-    public function __construct(DefinitionCollector $definitionCollector)
+    public function __construct(DefinitionCollector $definitionCollector, DefinitionResolver $definitionResolver, bool $collectAutoload)
     {
         $this->definitionCollector = $definitionCollector;
+        $this->definitionResolver = $definitionResolver;
+        $this->collectAutoload = $collectAutoload;
         $this->prettyPrinter = new PrettyPrinter;
+    }
+
+    public function visitAutoloadNode(Node $node) {
+      // looking at array assignments.
+      if (!($node instanceof Node\Expr\Assign)) {
+        return;
+      }
+
+			// check left hand side.
+      $lhs = $this->var;
+      if (!($lhs instanceof Node\Expr\ArrayDimFetch)) {
+				return;
+			}
+
+			$dimFetchVar = $lhs->var;
+			if (!($dimFetchVar instanceof Node\Expr\Variable)) {
+				return;
+			}
+			
+			if ($dimFetchVar !== "autoload") {
+				return;
+			}
+			// end of checking left hand side.
+
+			$dim = $lhs->dim;
+			if (!($dim instanceof Node\Scalar\String_)) {
+				return;
+			}
+			// TODO: support more than libraries
+			$target = $dim->value;
+
+			// extract right hand side.
+			$rhs = $this->expr;
+			if (!($rhs instanceof Node\Expr\Array_)) {
+				return;
+			}
+		
+			$arrayOfLibs = $rhs->items;
+			foreach ($arrayOfLibs as $lib) {
+				$libName = $lib->value->value;
+				// TODO: insert field into resolver.
+			}
+
     }
 
     public function enterNode(Node $node)
     {
+        if ($this->collectAutoload) {
+
+          $this->visitAutoloadNode($node);
+        }
+
         // check its name is 'model'
         if (!($node instanceof Node\Expr\MethodCall)) {
             return;
@@ -71,7 +124,7 @@ class DynamicLoader extends NodeVisitorAbstract
         $enityName = array_pop($entityParts);
         $fieldName = $enityName;
 
-        // deal with case like: 	$this->_CI->load->model('users_mdl', 'hahaha');
+        // deal with case like:   $this->_CI->load->model('users_mdl', 'hahaha');
         if ($callNode->name = "model" && $nameNode !== NULL) {
             if (!($nameNode instanceof Node\Scalar\String_)) {
                 return;

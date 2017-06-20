@@ -26,6 +26,10 @@ class DefinitionResolver
      */
     private $prettyPrinter;
 
+
+		public $autoloadInfo;
+
+
     /**
      * @param ReadableIndex $index
      */
