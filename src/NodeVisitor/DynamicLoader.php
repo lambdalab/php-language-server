@@ -29,55 +29,136 @@ class DynamicLoader extends NodeVisitorAbstract
         $this->prettyPrinter = new PrettyPrinter;
     }
 
+    public function visitAutoloadClassDeclaration(Node $node) {
+      if (!($node instanceof Node\Stmt\Class_)) {
+        return;
+      }
+
+      $extends = $node->extends->parts;
+      $shouldAutoload = false;
+      foreach ($extends as $part) {
+        // TODO: add more?
+        if ($part == "CI_Controller") {
+          $shouldAutoload = true;
+          break;
+        }
+      }
+
+      if (!$shouldAutoload) {
+        return;
+      }
+
+      // TODO: apply it to other 
+      // in this case we have identified a class node that should include 
+      // declaration of autoload fields.
+      $classFqn = $node->namespacedName->toString();
+      $fqn = $classFqn . "->" . $fieldName;
+    }
+
     public function visitAutoloadNode(Node $node) {
       // looking at array assignments.
       if (!($node instanceof Node\Expr\Assign)) {
         return;
       }
 
-			// check left hand side.
+      // check left hand side.
       $lhs = $this->var;
       if (!($lhs instanceof Node\Expr\ArrayDimFetch)) {
-				return;
-			}
+        return;
+      }
 
-			$dimFetchVar = $lhs->var;
-			if (!($dimFetchVar instanceof Node\Expr\Variable)) {
-				return;
-			}
-			
-			if ($dimFetchVar !== "autoload") {
-				return;
-			}
-			// end of checking left hand side.
+      $dimFetchVar = $lhs->var;
+      if (!($dimFetchVar instanceof Node\Expr\Variable)) {
+        return;
+      }
 
-			$dim = $lhs->dim;
-			if (!($dim instanceof Node\Scalar\String_)) {
-				return;
-			}
-			// TODO: support more than libraries
-			$target = $dim->value;
+      if ($dimFetchVar !== "autoload") {
+        return;
+      }
+      // end of checking left hand side.
 
-			// extract right hand side.
-			$rhs = $this->expr;
-			if (!($rhs instanceof Node\Expr\Array_)) {
-				return;
-			}
-		
-			$arrayOfLibs = $rhs->items;
-			foreach ($arrayOfLibs as $lib) {
-				$libName = $lib->value->value;
-				// TODO: insert field into resolver.
-			}
+      $dim = $lhs->dim;
+      if (!($dim instanceof Node\Scalar\String_)) {
+        return;
+      }
+      // TODO: support more than libraries
+      $target = $dim->value;
 
+      // extract right hand side.
+      $rhs = $this->expr;
+      if (!($rhs instanceof Node\Expr\Array_)) {
+        return;
+      }
+    
+      // $target -> $node reference
+      $arrayOfLibs = $rhs->items;
+      foreach ($arrayOfLibs as $lib) {
+        $libName = $lib->value->value;
+        switch ($target) {
+          case "libraries":
+            $this->definitionResolver->autoloadLibraries[$libName] = $lib;
+            break;
+          case "helpers":
+            $this->definitionResolver->autoloadHelpers[$libName] = $lib;
+            break;
+          case "config":
+            $this->definitionResolver->autoloadConfig[$libName] = $lib;
+            break;
+          case "models":
+            $this->definitionResolver->autoloadModels[$libName] = $lib;
+            break;
+          case "language":
+            $this->definitionResolver->autoloadLanguage[$libName] = $lib;
+            break;
+        }
+      }
+
+    }
+
+    public function createAutoloadFields(Node $node) {
+      // node has to be a class
+      if (!($node instanceof Node\Stmt\ClassLike)) {
+        return;
+      }
+
+      // TODO: load the things from resolver.
+      //foreach ($this->definitionResolver->autoloadLibraries as $lib)
+      createDefinition($node, $entityNode);
+    }
+
+    public function AutoloadDefinition(Node $callNode, String $loadName) {
+      // field name equals to the load name.
+      $fieldName = $loadName;
+
+      // construct $fqn
+      $fqn = NULL;
+      $classFqn = NULL;
+      while ($enclosedClass !== NULL) {
+        $enclosedClass = $enclosedClass->getAttribute('parentNode');
+        if ($enclosedClass instanceof Node\Stmt\ClassLike && isset($enclosedClass->name)) {
+          $classFqn = $enclosedClass->namespacedName->toString();
+          $fqn = $classFqn . '->' . $fieldName;
+          break;
+        }
+      }
+      if ($fqn === NULL) {
+        return;
+      }
+
+      // TODO: refactor create definition and use it here.
     }
 
     public function enterNode(Node $node)
     {
+        // handling autoloading.
         if ($this->collectAutoload) {
-
+          // records autoloading fields into definition resolver.
           $this->visitAutoloadNode($node);
+          // spits autoloading fields to a class that is derived from controller classes.
+          $this->visitAutoloadClassDeclaration($node);
         }
+
+        // The follwoing is for handling dynamic loading.
 
         // check its name is 'model'
         if (!($node instanceof Node\Expr\MethodCall)) {
@@ -105,19 +186,18 @@ class DynamicLoader extends NodeVisitorAbstract
             if ($argSize == 2) {
                 $nameNode = $node->args[1]->value;
             }
-            $this->createDefintion($node, $node->args[0]->value, $nameNode);
+            $this->createDefinition($node, $node->args[0]->value, $nameNode);
         } else if ($node->args[0]->value instanceof Node\Expr\Array_) {
             $elems = $node->args[0]->value->items;
             foreach ($elems as $item) {
                 if ($item->value instanceof Node\Scalar\String_) {
-                    $this->createDefintion($node, $item->value, $nameNode);
+                    $this->createDefinition($node, $item->value, $nameNode);
                 }
             }
         }
     }
 
-
-    public function createDefintion($callNode, $entityNode, $nameNode)
+    public function createDefinition($callNode, $entityNode, $nameNode)
     {
         $entityString = $entityNode->value;
         $entityParts = explode('/', $entityString);
