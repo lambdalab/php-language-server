@@ -34,10 +34,10 @@ class DynamicLoader extends NodeVisitorAbstract
         return;
       }
 
-      $extends = $node->extends->parts;
+      $extends = $node->extends;
       $shouldAutoload = false;
       foreach ($extends as $part) {
-        // TODO: add more?
+        // TODO: add more criteria here?
         if ($part == "CI_Controller") {
           $shouldAutoload = true;
           break;
@@ -48,11 +48,11 @@ class DynamicLoader extends NodeVisitorAbstract
         return;
       }
 
-      // TODO: apply it to other 
-      // in this case we have identified a class node that should include 
-      // declaration of autoload fields.
-      $classFqn = $node->namespacedName->toString();
-      $fqn = $classFqn . "->" . $fieldName;
+      // TODO: implement components other than models.
+      foreach ($this->definitionResolver->autoloadModels as $key => $value) {
+        //TODO: create field using $key (String) and $value (Node)
+        createAutoloadDefinition($node, $value);
+      }
     }
 
     public function visitAutoloadNode(Node $node) {
@@ -115,50 +115,18 @@ class DynamicLoader extends NodeVisitorAbstract
 
     }
 
-    public function createAutoloadFields(Node $node) {
-      // node has to be a class
-      if (!($node instanceof Node\Stmt\ClassLike)) {
-        return;
-      }
-
-      // TODO: load the things from resolver.
-      //foreach ($this->definitionResolver->autoloadLibraries as $lib)
-      createDefinition($node, $entityNode);
-    }
-
-    public function AutoloadDefinition(Node $callNode, String $loadName) {
-      // field name equals to the load name.
-      $fieldName = $loadName;
-
-      // construct $fqn
-      $fqn = NULL;
-      $classFqn = NULL;
-      while ($enclosedClass !== NULL) {
-        $enclosedClass = $enclosedClass->getAttribute('parentNode');
-        if ($enclosedClass instanceof Node\Stmt\ClassLike && isset($enclosedClass->name)) {
-          $classFqn = $enclosedClass->namespacedName->toString();
-          $fqn = $classFqn . '->' . $fieldName;
-          break;
-        }
-      }
-      if ($fqn === NULL) {
-        return;
-      }
-
-      // TODO: refactor create definition and use it here.
-    }
-
     public function enterNode(Node $node)
     {
         // handling autoloading.
         if ($this->collectAutoload) {
           // records autoloading fields into definition resolver.
           $this->visitAutoloadNode($node);
-          // spits autoloading fields to a class that is derived from controller classes.
-          $this->visitAutoloadClassDeclaration($node);
         }
 
-        // The follwoing is for handling dynamic loading.
+        // spits autoloading fields to a class that is derived from controller classes.
+        $this->visitAutoloadClassDeclaration($node);
+
+        // The follwoing is for handling dynamic loading. (Finished)
 
         // check its name is 'model'
         if (!($node instanceof Node\Expr\MethodCall)) {
@@ -195,6 +163,54 @@ class DynamicLoader extends NodeVisitorAbstract
                 }
             }
         }
+    }
+
+    // copied from createDefinition and tailored.
+    public function createAutoloadDefinition($classNode, $entityNode)
+    {
+        // TODO: fix names.
+        $entityString = $entityNode->value;
+        $entityParts = explode('/', $entityString);
+        $enityName = array_pop($entityParts);
+        $fieldName = $enityName;
+
+        $enclosedClass = $classNode;
+        $classFqn = $enclosedClass->namespacedName->toString();
+        $fqn = $classFqn . '->' . $fieldName;
+
+        // if we cannot find definition, just return.
+        if ($fqn === NULL) {
+            return;
+        }
+
+        // add fqn to nodes and definitions.
+        $this->definitionCollector->nodes[$fqn] = $entityNode;
+
+        // Create symbol
+//        $classFqnParts = preg_split('/(::|->|\\\\)/', $fqn);
+//        array_pop($classFqnParts);
+//        $classFqn = implode('\\', $classFqnParts);
+        $sym = new SymbolInformation($fieldName, SymbolKind::PROPERTY, Location::fromNode($entityNode), $classFqn);
+
+        // Create type
+        // array_push($entityParts, ucwords($enityName));
+        // $typeName = implode('\\', $entityParts);
+        $typeName = ucwords($enityName);
+        $type = new Types\Object_(new Fqsen('\\' . $typeName));
+
+        // Create defintion from symbol, type and all others
+        $def = new Definition;
+        $def->canBeInstantiated = false;
+        $def->isGlobal = false; // TODO check the meaning of this, why public field has this set to false?
+        $def->isStatic = false; // it should not be a static field
+        $def->fqn = $fqn;
+        $def->symbolInformation = $sym;
+        $def->type = $type;
+        // Maybe this is not the best
+        $def->declarationLine = $fieldName; // $this->prettyPrinter->prettyPrint([$argNode]);
+        $def->documentation = "Dynamically Generated Field: " . $fieldName;
+
+        $this->definitionCollector->definitions[$fqn] = $def;
     }
 
     public function createDefinition($callNode, $entityNode, $nameNode)
