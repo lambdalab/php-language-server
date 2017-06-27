@@ -62,7 +62,7 @@ class DynamicLoader extends NodeVisitorAbstract
       }
 
       // check left hand side.
-      $lhs = $this->var;
+      $lhs = $node->var;
       if (!($lhs instanceof Node\Expr\ArrayDimFetch)) {
         return;
       }
@@ -72,7 +72,7 @@ class DynamicLoader extends NodeVisitorAbstract
         return;
       }
 
-      if ($dimFetchVar !== "autoload") {
+      if ($dimFetchVar->name !== "autoload") {
         return;
       }
       // end of checking left hand side.
@@ -85,7 +85,7 @@ class DynamicLoader extends NodeVisitorAbstract
       $target = $dim->value;
 
       // extract right hand side.
-      $rhs = $this->expr;
+      $rhs = $node->expr;
       if (!($rhs instanceof Node\Expr\Array_)) {
         return;
       }
