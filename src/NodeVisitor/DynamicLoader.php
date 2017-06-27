@@ -52,17 +52,35 @@ class DynamicLoader extends NodeVisitorAbstract
         return;
       }
 
-      // TODO: implement other components.
-      foreach ($this->definitionResolver->autoloadLibraries as $key => $value) {
-        //TODO: create field using $key (String) and $value (Node)
-        $this->createAutoloadDefinition($node, $value);
+      if (isset($this->definitionResolver->autoloadLibraries)) {
+        foreach ($this->definitionResolver->autoloadLibraries as $key => $value) {
+          $this->createAutoloadDefinition($node, $value);
+        }
       }
 
-      foreach ($this->definitionResolver->autoloadModels as $key => $value) {
-        //TODO: create field using $key (String) and $value (Node)
-        $this->createAutoloadDefinition($node, $value);
+      if (isset($this->definitionResolver->autoloadModels)) {
+        foreach ($this->definitionResolver->autoloadModels as $key => $value) {
+          $this->createAutoloadDefinition($node, $value);
+        }
       }
 
+      if (isset($this->definitionResolver->autoloadHelpers)) {
+        foreach ($this->definitionResolver->autoloadHelpers as $key => $value) {
+          $this->createAutoloadDefinition($node, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadConfig)) {
+        foreach ($this->definitionResolver->autoloadConfig as $key => $value) {
+          $this->createAutoloadDefinition($node, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadLanguage)) {
+        foreach ($this->definitionResolver->autoloadLanguage as $key => $value) {
+          $this->createAutoloadDefinition($node, $value);
+        }
+      }
     }
 
     public function visitAutoloadNode(Node $node) {
@@ -138,7 +156,7 @@ class DynamicLoader extends NodeVisitorAbstract
 
         // The follwoing is for handling dynamic loading. (Finished)
 
-        // check its name is 'model'
+        // check its name is 'model', 'library' or 'helper'.
         if (!($node instanceof Node\Expr\MethodCall)) {
             return;
         }
