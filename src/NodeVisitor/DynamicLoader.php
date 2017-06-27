@@ -36,9 +36,10 @@ class DynamicLoader extends NodeVisitorAbstract
 
       $extends = $node->extends;
       $shouldAutoload = false;
-      foreach ($extends as $part) {
+      foreach ($extends->parts as $part) {
         // TODO: add more criteria here?
-        if ($part == "CI_Controller") {
+        if ($part === "CI_Controller" || $part === "ST_Controller" ||
+            $part === "ST_Auth_Controller") {
           $shouldAutoload = true;
           break;
         }
@@ -48,11 +49,17 @@ class DynamicLoader extends NodeVisitorAbstract
         return;
       }
 
-      // TODO: implement components other than models.
+      // TODO: implement other components.
+      foreach ($this->definitionResolver->autoloadLibraries as $key => $value) {
+        //TODO: create field using $key (String) and $value (Node)
+        $this->createAutoloadDefinition($node, $value);
+      }
+
       foreach ($this->definitionResolver->autoloadModels as $key => $value) {
         //TODO: create field using $key (String) and $value (Node)
-        createAutoloadDefinition($node, $value);
+        $this->createAutoloadDefinition($node, $value);
       }
+
     }
 
     public function visitAutoloadNode(Node $node) {
@@ -98,13 +105,13 @@ class DynamicLoader extends NodeVisitorAbstract
           case "libraries":
             $this->definitionResolver->autoloadLibraries[$libName] = $lib;
             break;
-          case "helpers":
+          case "helper":
             $this->definitionResolver->autoloadHelpers[$libName] = $lib;
             break;
           case "config":
             $this->definitionResolver->autoloadConfig[$libName] = $lib;
             break;
-          case "models":
+          case "model":
             $this->definitionResolver->autoloadModels[$libName] = $lib;
             break;
           case "language":
@@ -166,17 +173,13 @@ class DynamicLoader extends NodeVisitorAbstract
     }
 
     // copied from createDefinition and tailored.
-    public function createAutoloadDefinition($classNode, $entityNode)
+    public function createAutoloadDefinition(Node $classNode, Node $entityNode)
     {
-        // TODO: fix names.
-        $entityString = $entityNode->value;
-        $entityParts = explode('/', $entityString);
-        $enityName = array_pop($entityParts);
-        $fieldName = $enityName;
+        $fieldName = $entityNode->value->value;
 
         $enclosedClass = $classNode;
         $classFqn = $enclosedClass->namespacedName->toString();
-        $fqn = $classFqn . '->' . $fieldName;
+        $fqn = $classFqn . "->" . $fieldName;
 
         // if we cannot find definition, just return.
         if ($fqn === NULL) {
@@ -195,7 +198,7 @@ class DynamicLoader extends NodeVisitorAbstract
         // Create type
         // array_push($entityParts, ucwords($enityName));
         // $typeName = implode('\\', $entityParts);
-        $typeName = ucwords($enityName);
+        $typeName = ucwords($fieldName);
         $type = new Types\Object_(new Fqsen('\\' . $typeName));
 
         // Create defintion from symbol, type and all others
