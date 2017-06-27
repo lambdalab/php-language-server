@@ -35,6 +35,9 @@ class DynamicLoader extends NodeVisitorAbstract
       }
 
       $extends = $node->extends;
+      if (!isset($extends->parts)) {
+          return;
+      }
       $shouldAutoload = false;
       foreach ($extends->parts as $part) {
         // TODO: add more criteria here?
