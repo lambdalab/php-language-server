@@ -584,7 +584,6 @@ class DefinitionResolver
         //   $this -> Type\this
         //   $myVariable -> type of corresponding assignment expression
         if ($expr instanceof Node\Expression\Variable || $expr instanceof Node\UseVariableName) {
-            // TODO: this will need to change when fluent interfaces are supported
             if ($expr->getName() === 'this') {
                 return new Types\Object_(new Fqsen('\\' . $this->getContainingClassFqn($expr)));
             }
@@ -677,29 +676,19 @@ class DefinitionResolver
                 } else {
                     $classFqn = substr((string)$t->getFqsen(), 1);
                 }
-                $fqn = $classFqn . '->' . $expr->memberName->getText($expr->getFileContents());
+                $add = '->' . $expr->memberName->getText($expr->getFileContents());
                 if ($expr->parent instanceof Node\Expression\CallExpression) {
-                    $fqn .= '()';
+                    $add .= '()';
                 }
-
-                // Find the right class that implements the member
-                $implementorFqns = [$classFqn];
-                while ($implementorFqn = array_shift($implementorFqns)) {
-                    // If the member FQN exists, return it
-                    $def = $this->index->getDefinition($implementorFqn . $memberSuffix);
-                    if ($def) {
-                        return $def->type;
-                    }
-                    // Get Definition of implementor class
-                    $implementorDef = $this->index->getDefinition($implementorFqn);
-                    // If it doesn't exist, return the initial guess
-                    if ($implementorDef === null) {
-                        break;
-                    }
-                    // Repeat for parent class
-                    if ($implementorDef->extends) {
-                        foreach ($implementorDef->extends as $extends) {
-                            $implementorFqns[] = $extends;
+                $classDef = $this->index->getDefinition($classFqn);
+                if ($classDef !== null) {
+                    foreach ($classDef->getAncestorDefinitions($this->index, true) as $fqn => $def) {
+                        $def = $this->index->getDefinition($fqn . $add);
+                        if ($def !== null) {
+                            if ($def->type instanceof Types\This) {
+                                return new Types\Object_(new Fqsen('\\' . $classFqn));
+                            }
+                            return $def->type;
                         }
                     }
                 }
