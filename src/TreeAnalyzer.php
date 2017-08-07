@@ -5,10 +5,13 @@ namespace LanguageServer;
 
 use LanguageServer\Protocol\{Diagnostic, DiagnosticSeverity, Range, Position, TextEdit};
 use LanguageServer\Index\Index;
-use phpDocumentor\Reflection\DocBlockFactory;
+use phpDocumentor\Reflection\{DocBlockFactory, Fqsen, Types, Type};
 use Sabre\Uri;
 use Microsoft\PhpParser;
 use Microsoft\PhpParser\Node;
+
+// For autoloading.
+use LanguageServer\Protocol\{SymbolInformation, SymbolKind, Location};
 
 class TreeAnalyzer
 {
@@ -98,6 +101,7 @@ class TreeAnalyzer
      */
     private function update(Node $node)
     {
+
         $fqn = ($this->definitionResolver)::getDefinedFqn($node);
         // Only index definitions with an FQN (no variables)
         if ($fqn !== null) {
@@ -152,7 +156,299 @@ class TreeAnalyzer
                 }
             }
         }
+
+        // ***** start of lambdalab-specific code
+        // Collect autoload
+        $this->updateAutoload($node);
+
+        // Dynamic loading handler
+        if ($node instanceof Node\Expression\MemberAccessExpression) {
+          $this->handleDynamicLoadNode($node);
+        }
+
+        /*
+        // Autoloading handler
+        if ($node instanceof Node\Statement\ClassDeclaration) {
+          $this->handleAutoload($node);
+        }
+        //***** end of lambdalab-specific code
+        */
+
         $this->collectDefinitionsAndReferences($node);
+    }
+
+    // This function records autoload information.
+    public function updateAutoload(Node $node) {
+      if (!$node instanceof Node\Expression\AssignmentExpression) {
+        return;
+      }
+
+      $lhs = $node->leftOperand;
+      if (!$lhs instanceof Node\Expression\SubscriptExpression) {
+        return;
+      }
+
+      $pfe = $lhs->postfixExpression;
+      $pfeName = $pfe->getText();
+      if ($pfeName != "\$autoload") {
+        return;
+      }
+
+      $rhs = $node->rightOperand;
+      if (!$rhs instanceof Node\Expression\ArrayCreationExpression) {
+        return;
+      }
+
+      $type = $lhs->accessExpression; // we have retrieved the autoload type.
+      
+      if (!isset($rhs->arrayElements)) {
+        return;
+      }
+      $moduleList = $rhs->arrayElements;
+
+      // now we have a list of quoted modules.
+      foreach ($moduleList->getValues() as $lib) {
+        $libName = substr($lib->getText(), 1, -1);
+        switch ($type->getText()) {
+        case "'libraries'":
+          $this->definitionResolver->autoloadLibraries[$libName] = $lib;
+          break;
+        case "'helper'":
+          $this->definitionResolver->autoloadHelpers[$libName] = $lib;
+          break;
+        case "'config'":
+          $this->definitionResolver->autoloadConfig[$libName] = $lib;
+          break;
+        case "'model'":
+          $this->definitionResolver->autoloadModels[$libName] = $lib;
+          break;
+        case "'language'":
+          $this->definitionResolver->autoloadLanguage[$libName] = $lib;
+          break;
+        }
+      }
+    }
+
+
+    // This function fills autoload fields.
+    public function handleAutoload(Node $node) {
+      if (!$node instanceof Node\Statement\ClassDeclaration) {
+        return;
+      }
+
+      if (!isset($node->classBaseClause)) {
+        return;
+      }
+      $baseClause = $node->classBaseClause;
+
+      if (!isset($baseClause->baseClass)) {
+        return;
+      }
+
+      $baseClasses = $baseClause->baseClass;
+
+      $shouldAutoload = false;
+
+      if (is_array($baseClasses)) {
+        foreach ($baseClasses as $base) {
+          // each $base is a Qualified name:
+          if (isset($base)) {
+            $baseClass = $base->getText();
+            if ($baseClass == "CI_Controller" ||
+              $baseClass == "ST_Controller" ||
+              $baseClass == "ST_Auth_Controller") {
+              $shouldAutoload = true;
+            } 
+          }
+        }
+      } else {
+        $baseClass = $baseClasses->getText();
+        if ($baseClass == "CI_Controller" ||
+          $baseClass == "ST_Controller" ||
+          $baseClass == "ST_Auth_Controller") {
+          $shouldAutoload = true;
+        } 
+      } 
+      
+      if (!$shouldAutoload) {
+        return;
+      }
+
+      if (isset($this->definitionResolver->autoloadLibraries)) {
+        foreach ($this->definitionResolver->autoloadLibraries as $key => $value) {
+          $this->createAutoloadDefinition($node, $key, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadModels)) {
+        foreach ($this->definitionResolver->autoloadModels as $key => $value) {
+          $this->createAutoloadDefinition($node, $key, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadHelpers)) {
+        foreach ($this->definitionResolver->autoloadHelpers as $key => $value) {
+          $this->createAutoloadDefinition($node, $key, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadConfig)) {
+        foreach ($this->definitionResolver->autoloadConfig as $key => $value) {
+          $this->createAutoloadDefinition($node, $key, $value);
+        }
+      }
+
+      if (isset($this->definitionResolver->autoloadLanguage)) {
+        foreach ($this->definitionResolver->autoloadLanguage as $key => $value) {
+          $this->createAutoloadDefinition($node, $key, $value);
+        }
+      }
+    }
+
+    public function isDynamicLoadNode(Node $node) {
+      $text = $node->getText();
+
+      // TODO: add more checks.
+
+      $model = "load->model";
+      if (substr($text, -strlen($model)) == $model) {
+        return true;
+      }
+
+      $lib = "load->library";
+      if (substr($text, -strlen($lib)) == $lib) {
+        return true;
+      }
+
+      $helper = "load->helper";
+      if (substr($text, -strlen($helper)) == $helper) {
+        return true;
+      }
+
+      return false;
+    }
+
+    public function handleDynamicLoadNode(Node $node) {
+      if (!$this->isDynamicLoadNode($node)) {
+        return;
+      }
+
+      $argListG = $node->getParent()->argumentExpressionList->getValues();
+
+      $argList = [];
+      foreach ($argListG as $arg) {
+        $argList[] = $arg;
+      }
+
+      $argSize = count($argList);
+
+      if ($argSize == 0 || $argSize == 3) { // when argSize = 3 it's loading from db
+        return;
+      }
+
+      $nameNode = NULL;
+
+      if (!isset($argList[0]->expression)) {
+        return;
+      }
+      $argExpression = $argList[0]->expression;
+
+      if ($argExpression instanceof Node\StringLiteral) {
+        // make sure the first argument is a string.
+
+        if ($argSize == 2) {
+          if (!isset($argList[1]->expression)) {
+            return;
+          }
+          $nameNode = $argList[1]->expression;
+        }
+        $this->createDefinition($node, $argExpression, $nameNode);
+      } 
+      // TODO: enable arrays
+      /*else if ($node->args[0]->value instanceof Node\Expr\Array_) {
+        $elems = $node->args[0]->value->items;
+        foreach ($elems as $item) {
+          if ($item->value instanceof Node\Scalar\String_) {
+            $this->createDefinition($node, $item->value, $nameNode);
+          }
+        }
+      }*/
+    }
+
+    public function insertDefinition(String $fqn, String $fieldName, String $classFqn, String $entityName, Node $entityNode, Bool $shouldCopy) {
+      $this->definitionNodes[$fqn] = $entityNode;
+      
+      // create symbol definition:
+      $sym = new SymbolInformation($fieldName, SymbolKind::PROPERTY, Location::fromNode($entityNode), $classFqn);
+
+      $typeName = $shouldCopy ? ucwords($fieldName) : ucwords($entityName);
+      $fqsen = new Fqsen('\\' . $typeName); 
+      $type = new Types\Object_($fqsen);
+
+      // Create defintion from symbol, type and all others
+      $def = new Definition;
+      $def->canBeInstantiated = false;
+      $def->isGlobal = false; // TODO check the meaning of this, why public field has this set to false?
+      $def->isStatic = false; // it should not be a static field
+      $def->fqn = $fqn;
+      $def->symbolInformation = $sym;
+      $def->type = $type;
+      // Maybe this is not the best
+      $def->declarationLine = $fieldName; // $this->prettyPrinter->prettyPrint([$argNode]);
+      $def->documentation = "Dynamically Generated Field: " . $fieldName;
+
+      $this->definitions[$fqn] = $def;
+    }
+
+    public function createAutoloadDefinition(Node $classNode, String $key, Node $entityNode) {
+      $fieldName = $key;
+      $enclosedClass = $classNode;
+      $classFqn = $enclosedClass->getNamespacedName()->getFullyQualifiedNameText();
+      $fqn = $classFqn . "->" . $fieldName;
+
+      // if we cannot find definition, just return.
+      if ($fqn === NULL) {
+        return;
+      }
+
+      $this->insertDefinition($fqn, $fieldName, $classFqn, $fieldName, $entityNode, true);
+    }
+
+    public function createDefinition($callNode, $entityNode, $nameNode) {
+      $entityString = substr($entityNode->getText(), 1, -1);
+      $entityParts = explode('\\', $entityString);
+      $enityName = array_pop($entityParts);
+      $fieldName = $enityName;
+
+      // deal with case like:   $this->_CI->load->model('users_mdl', 'hahaha');
+      /*
+      if ($callNode->name = "model" && $nameNode !== NULL) {
+        if (!($nameNode instanceof Node\Scalar\String_)) {
+          return;
+        }
+        $fieldName = $nameNode->value;
+      }
+      */
+
+      $enclosedClass = $callNode;
+      $fqn = NULL;
+      $classFqn = NULL;
+      while ($enclosedClass !== NULL) {
+        $enclosedClass = $enclosedClass->getParent();
+        if ($enclosedClass instanceof Node\Statement\ClassDeclaration) {
+          $classFqn = $enclosedClass->getNamespacedName()->getFullyQualifiedNameText();
+          // TODO: verify this
+          $fqn = $classFqn . '->' . $fieldName;
+          break;
+        }
+      }
+
+      if ($fqn == NULL) {
+        return;
+      }
+
+      $entityName = (string)$fieldName;
+      $this->insertDefinition($fqn, $fieldName, $classFqn, $entityName, $entityNode, false);
     }
 
     /**

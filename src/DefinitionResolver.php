@@ -34,6 +34,12 @@ class DefinitionResolver
      */
     private $docBlockFactory;
 
+    // autoload supports.
+    public $autoloadLibraries;
+    public $autoloadClasses;
+    public $autoloadModels;
+    public $autoloadLanguages;
+
     /**
      * @param ReadableIndex $index
      */
