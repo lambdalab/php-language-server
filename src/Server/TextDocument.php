@@ -3,34 +3,33 @@ declare(strict_types = 1);
 
 namespace LanguageServer\Server;
 
-use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
-use PhpParser\{Node, NodeTraverser};
-use LanguageServer\{LanguageClient, PhpDocumentLoader, PhpDocument, DefinitionResolver, CompletionProvider};
-use LanguageServer\NodeVisitor\VariableReferencesCollector;
-use LanguageServer\Protocol\{
-    SymbolLocationInformation,
-    SymbolDescriptor,
-    TextDocumentItem,
-    TextDocumentIdentifier,
-    VersionedTextDocumentIdentifier,
-    Position,
-    Range,
-    FormattingOptions,
-    TextEdit,
-    Location,
-    SymbolInformation,
-    ReferenceContext,
-    Hover,
-    MarkedString,
-    SymbolKind,
-    CompletionItem,
-    CompletionItemKind
+use LanguageServer\{
+    CompletionProvider, LanguageClient, PhpDocument, PhpDocumentLoader, DefinitionResolver
 };
 use LanguageServer\Index\ReadableIndex;
+use LanguageServer\Protocol\{
+    FormattingOptions,
+    Hover,
+    Location,
+    MarkedString,
+    Position,
+    Range,
+    ReferenceContext,
+    SymbolDescriptor,
+    PackageDescriptor,
+    SymbolLocationInformation,
+    TextDocumentIdentifier,
+    TextDocumentItem,
+    VersionedTextDocumentIdentifier
+};
+use Microsoft\PhpParser;
+use Microsoft\PhpParser\Node;
 use Sabre\Event\Promise;
 use Sabre\Uri;
+use function LanguageServer\{
+    isVendored, waitForEvent, getPackageName
+};
 use function Sabre\Event\coroutine;
-use function LanguageServer\{waitForEvent, isVendored};
 
 /**
  * Provides method handlers for all textDocument/* methods
@@ -48,11 +47,6 @@ class TextDocument
      * @var Project
      */
     protected $project;
-
-    /**
-     * @var PrettyPrinter
-     */
-    protected $prettyPrinter;
 
     /**
      * @var DefinitionResolver
@@ -80,12 +74,12 @@ class TextDocument
     protected $composerLock;
 
     /**
-     * @param PhpDocumentLoader  $documentLoader
+     * @param PhpDocumentLoader $documentLoader
      * @param DefinitionResolver $definitionResolver
-     * @param LanguageClient     $client
-     * @param ReadableIndex      $index
-     * @param \stdClass          $composerJson
-     * @param \stdClass          $composerLock
+     * @param LanguageClient $client
+     * @param ReadableIndex $index
+     * @param \stdClass $composerJson
+     * @param \stdClass $composerLock
      */
     public function __construct(
         PhpDocumentLoader $documentLoader,
@@ -97,7 +91,6 @@ class TextDocument
     ) {
         $this->documentLoader = $documentLoader;
         $this->client = $client;
-        $this->prettyPrinter = new PrettyPrinter();
         $this->definitionResolver = $definitionResolver;
         $this->completionProvider = new CompletionProvider($this->definitionResolver, $index);
         $this->index = $index;
@@ -202,31 +195,34 @@ class TextDocument
             // Variables always stay in the boundary of the file and need to be searched inside their function scope
             // by traversing the AST
             if (
-                $node instanceof Node\Expr\Variable
-                || $node instanceof Node\Param
-                || $node instanceof Node\Expr\ClosureUse
+
+            ($node instanceof Node\Expression\Variable && !($node->getParent()->getParent() instanceof Node\PropertyDeclaration))
+                || $node instanceof Node\Parameter
+                || $node instanceof Node\UseVariableName
             ) {
-                if ($node->name instanceof Node\Expr) {
+                if (isset($node->name) && $node->name instanceof Node\Expression) {
                     return null;
                 }
                 // Find function/method/closure scope
                 $n = $node;
-                while (isset($n) && !($n instanceof Node\FunctionLike)) {
-                    $n = $n->getAttribute('parentNode');
+
+                $n = $n->getFirstAncestor(Node\Statement\FunctionDeclaration::class, Node\MethodDeclaration::class, Node\Expression\AnonymousFunctionCreationExpression::class, Node\SourceFileNode::class);
+
+                if ($n === null) {
+                    $n = $node->getFirstAncestor(Node\Statement\ExpressionStatement::class)->getParent();
                 }
-                if (!isset($n)) {
-                    $n = $node->getAttribute('ownerDocument');
-                }
-                $traverser = new NodeTraverser;
-                $refCollector = new VariableReferencesCollector($node->name);
-                $traverser->addVisitor($refCollector);
-                $traverser->traverse($n->getStmts());
-                foreach ($refCollector->nodes as $ref) {
-                    $locations[] = Location::fromNode($ref);
+
+                foreach ($n->getDescendantNodes() as $descendantNode) {
+                    if ($descendantNode instanceof Node\Expression\Variable &&
+                        $descendantNode->getName() === $node->getName()
+                    ) {
+                        $locations[] = Location::fromNode($descendantNode);
+                    }
                 }
             } else {
                 // Definition with a global FQN
                 $fqn = DefinitionResolver::getDefinedFqn($node);
+
                 // Wait until indexing finished
                 if (!$this->index->isComplete()) {
                     yield waitForEvent($this->index, 'complete');
@@ -392,9 +388,10 @@ class TextDocument
                 return [];
             }
             // Handle definition nodes
+            $fqn = DefinitionResolver::getDefinedFqn($node);
             while (true) {
                 if ($fqn) {
-                    $def = $this->index->getDefinition($definedFqn);
+                    $def = $this->index->getDefinition($fqn);
                 } else {
                     // Handle reference nodes
                     $def = $this->definitionResolver->resolveReferenceNodeToDefinition($node);
@@ -412,25 +409,14 @@ class TextDocument
             ) {
                 return [];
             }
-            $symbol = new SymbolDescriptor;
-            foreach (get_object_vars($def->symbolInformation) as $prop => $val) {
-                $symbol->$prop = $val;
-            }
-            $symbol->fqsen = $def->fqn;
+            // if Definition is inside a dependency, use the package name
             $packageName = getPackageName($def->symbolInformation->location->uri, $this->composerJson);
-            if ($packageName && $this->composerLock !== null) {
-                // Definition is inside a dependency
-                foreach (array_merge($this->composerLock->packages, $this->composerLock->{'packages-dev'}) as $package) {
-                    if ($package->name === $packageName) {
-                        $symbol->package = $package;
-                        break;
-                    }
-                }
-            } else if ($this->composerJson !== null) {
-                // Definition belongs to a root package
-                $symbol->package = $this->composerJson;
+            // else use the package name of the root package (if exists)
+            if (!$packageName && $this->composerJson !== null) {
+                $packageName = $this->composerJson->name;
             }
-            return [new SymbolLocationInformation($symbol, $symbol->location)];
+            $descriptor = new SymbolDescriptor($def->fqn, new PackageDescriptor($packageName));
+            return [new SymbolLocationInformation($descriptor, $def->symbolInformation->location)];
         });
     }
 }

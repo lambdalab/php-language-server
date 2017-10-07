@@ -3,10 +3,11 @@ declare(strict_types = 1);
 
 namespace LanguageServer;
 
-use PhpParser\Node;
+use LanguageServer\Index\ReadableIndex;
 use phpDocumentor\Reflection\{Types, Type, Fqsen, TypeResolver};
 use LanguageServer\Protocol\SymbolInformation;
 use Exception;
+use Generator;
 
 /**
  * Class used to represent symbols
@@ -44,6 +45,13 @@ class Definition
      * @var bool
      */
     public $isGlobal;
+
+    /**
+     * True if this definition is affected by global namespace fallback (global function or global constant)
+     *
+     * @var bool
+     */
+    public $roamed;
 
     /**
      * False for instance methods and properties
@@ -89,4 +97,33 @@ class Definition
      * @var string
      */
     public $documentation;
+
+    /**
+     * Yields the definitons of all ancestor classes (the Definition fqn is yielded as key)
+     *
+     * @param ReadableIndex $index the index to search for needed definitions
+     * @param bool $includeSelf should the first yielded value be the current definition itself
+     * @return Generator
+     */
+    public function getAncestorDefinitions(ReadableIndex $index, bool $includeSelf = false): Generator
+    {
+        if ($includeSelf) {
+            yield $this->fqn => $this;
+        }
+        if ($this->extends !== null) {
+            // iterating once, storing the references and iterating again
+            // guarantees that closest definitions are yielded first
+            $definitions = [];
+            foreach ($this->extends as $fqn) {
+                $def = $index->getDefinition($fqn);
+                if ($def !== null) {
+                    yield $def->fqn => $def;
+                    $definitions[] = $def;
+                }
+            }
+            foreach ($definitions as $def) {
+                yield from $def->getAncestorDefinitions($index);
+            }
+        }
+    }
 }

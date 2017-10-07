@@ -3,28 +3,20 @@ declare(strict_types = 1);
 
 namespace LanguageServer;
 
-use LanguageServer\Protocol\{Diagnostic, DiagnosticSeverity, Range, Position, TextEdit};
-use LanguageServer\NodeVisitor\{
-    NodeAtPositionFinder,
-    ReferencesAdder,
-    DocBlockParser,
-    DefinitionCollector,
-    ColumnCalculator,
-    ReferencesCollector,
-    DynamicLoader
-};
 use LanguageServer\Index\Index;
-use PhpParser\{Error, ErrorHandler, Node, NodeTraverser};
-use PhpParser\NodeVisitor\NameResolver;
+use LanguageServer\Protocol\{
+    Diagnostic, Position, Range
+};
+use Microsoft\PhpParser;
+use Microsoft\PhpParser\Node;
 use phpDocumentor\Reflection\DocBlockFactory;
-use Sabre\Uri;
 
 class PhpDocument
 {
     /**
      * The PHPParser instance
      *
-     * @var Parser
+     * @var PhpParser\Parser
      */
     private $parser;
 
@@ -55,18 +47,11 @@ class PhpDocument
     private $uri;
 
     /**
-     * The content of the document
-     *
-     * @var string
-     */
-    private $content;
-
-    /**
      * The AST of the document
      *
-     * @var Node[]
+     * @var Node\SourceFileNode
      */
-    private $stmts;
+    private $sourceFileNode;
 
     /**
      * Map from fully qualified name (FQN) to Definition
@@ -78,7 +63,7 @@ class PhpDocument
     /**
      * Map from fully qualified name (FQN) to Node
      *
-     * @var Node[]
+     * @var Node
      */
     private $definitionNodes;
 
@@ -97,18 +82,18 @@ class PhpDocument
     private $diagnostics;
 
     /**
-     * @param string             $uri                The URI of the document
-     * @param string             $content            The content of the document
-     * @param Index              $index              The Index to register definitions and references to
-     * @param Parser             $parser             The PHPParser instance
-     * @param DocBlockFactory    $docBlockFactory    The DocBlockFactory instance to parse docblocks
+     * @param string $uri The URI of the document
+     * @param string $content The content of the document
+     * @param Index $index The Index to register definitions and references to
+     * @param PhpParser\Parser $parser The PhpParser instance
+     * @param DocBlockFactory $docBlockFactory The DocBlockFactory instance to parse docblocks
      * @param DefinitionResolver $definitionResolver The DefinitionResolver to resolve definitions to symbols in the workspace
      */
     public function __construct(
         string $uri,
         string $content,
         Index $index,
-        Parser $parser,
+        $parser,
         DocBlockFactory $docBlockFactory,
         DefinitionResolver $definitionResolver
     ) {
@@ -138,15 +123,13 @@ class PhpDocument
     /**
      * Updates the content on this document.
      * Re-parses a source file, updates symbols and reports parsing errors
-     * that may have occured as diagnostics.
+     * that may have occurred as diagnostics.
      *
      * @param string $content
      * @return void
      */
     public function updateContent(string $content)
     {
-        $this->content = $content;
-
         // Unregister old definitions
         if (isset($this->definitions)) {
             foreach ($this->definitions as $fqn => $definition) {
@@ -165,72 +148,26 @@ class PhpDocument
         $this->definitions = null;
         $this->definitionNodes = null;
 
-        $errorHandler = new ErrorHandler\Collecting;
-        $stmts = $this->parser->parse($content, $errorHandler);
+        $treeAnalyzer = new TreeAnalyzer($this->parser, $content, $this->docBlockFactory, $this->definitionResolver, $this->uri);
 
-        $this->diagnostics = [];
-        foreach ($errorHandler->getErrors() as $error) {
-            $this->diagnostics[] = Diagnostic::fromError($error, $this->content, DiagnosticSeverity::ERROR, 'php');
+        $this->diagnostics = $treeAnalyzer->getDiagnostics();
+
+        $this->definitions = $treeAnalyzer->getDefinitions();
+
+        $this->definitionNodes = $treeAnalyzer->getDefinitionNodes();
+
+        $this->referenceNodes = $treeAnalyzer->getReferenceNodes();
+
+        foreach ($this->definitions as $fqn => $definition) {
+            $this->index->setDefinition($fqn, $definition);
         }
 
-				// figure out if it is analyzing an autoload file.
-				$isAutoload = false;
-				$ending = "application/config/autoload.php";
-				$endingLength = strlen($ending);
-				$isAutoload = (substr($this->uri, -$endingLength) === $ending);
-
-        // $stmts can be null in case of a fatal parsing error
-        if ($stmts) {
-            $traverser = new NodeTraverser;
-
-            // Resolve aliased names to FQNs
-            $traverser->addVisitor(new NameResolver($errorHandler));
-
-            // Add parentNode, previousSibling, nextSibling attributes
-            $traverser->addVisitor(new ReferencesAdder($this));
-
-            // Add column attributes to nodes
-            $traverser->addVisitor(new ColumnCalculator($content));
-
-            // Parse docblocks and add docBlock attributes to nodes
-            $docBlockParser = new DocBlockParser($this->docBlockFactory);
-            $traverser->addVisitor($docBlockParser);
-
-            $traverser->traverse($stmts);
-
-            // Report errors from parsing docblocks
-            foreach ($docBlockParser->errors as $error) {
-                $this->diagnostics[] = Diagnostic::fromError($error, $this->content, DiagnosticSeverity::WARNING, 'php');
-            }
-
-            $traverser = new NodeTraverser;
-
-            // Collect all definitions
-            $definitionCollector = new DefinitionCollector($this->definitionResolver);
-            $traverser->addVisitor($definitionCollector);
-
-            $traverser->addVisitor(new DynamicLoader($definitionCollector, $this->definitionResolver, $isAutoload));
-
-            // Collect all references
-            $referencesCollector = new ReferencesCollector($this->definitionResolver);
-            // $traverser->addVisitor($referencesCollector);
-
-            $traverser->traverse($stmts);
-
-            // Register this document on the project for all the symbols defined in it
-            $this->definitions = $definitionCollector->definitions;
-            $this->definitionNodes = $definitionCollector->nodes;
-            foreach ($definitionCollector->definitions as $fqn => $definition) {
-                $this->index->setDefinition($fqn, $definition);
-            }
-            // Register this document on the project for references
-            $this->referenceNodes = $referencesCollector->nodes;
-            foreach ($referencesCollector->nodes as $fqn => $nodes) {
-                $this->index->addReferenceUri($fqn, $this->uri);
-            }
-
-            $this->stmts = $stmts;
+        // Register this document on the project for references
+        foreach ($this->referenceNodes as $fqn => $nodes) {
+            $this->index->addReferenceUri($fqn, $this->uri);
         }
+
+        $this->sourceFileNode = $treeAnalyzer->getSourceFileNode();
     }
 
     /**
@@ -240,10 +177,10 @@ class PhpDocument
      */
     public function getFormattedText()
     {
-        if (empty($this->content)) {
+        if (empty($this->getContent())) {
             return [];
         }
-        return Formatter::format($this->content, $this->uri);
+        return Formatter::format($this->getContent(), $this->uri);
     }
 
     /**
@@ -253,7 +190,7 @@ class PhpDocument
      */
     public function getContent()
     {
-        return $this->content;
+        return $this->sourceFileNode->fileContents;
     }
 
     /**
@@ -279,11 +216,11 @@ class PhpDocument
     /**
      * Returns the AST of the document
      *
-     * @return Node[]
+     * @return Node\SourceFileNode|null
      */
-    public function getStmts(): array
+    public function getSourceFileNode()
     {
-        return $this->stmts;
+        return $this->sourceFileNode;
     }
 
     /**
@@ -294,14 +231,16 @@ class PhpDocument
      */
     public function getNodeAtPosition(Position $position)
     {
-        if ($this->stmts === null) {
+        if ($this->sourceFileNode === null) {
             return null;
         }
-        $traverser = new NodeTraverser;
-        $finder = new NodeAtPositionFinder($position);
-        $traverser->addVisitor($finder);
-        $traverser->traverse($this->stmts);
-        return $finder->node;
+
+        $offset = $position->toOffset($this->sourceFileNode->getFileContents());
+        $node = $this->sourceFileNode->getDescendantNodeAtPosition($offset);
+        if ($node !== null && $node->getStart() > $offset) {
+            return null;
+        }
+        return $node;
     }
 
     /**
@@ -312,12 +251,10 @@ class PhpDocument
      */
     public function getRange(Range $range)
     {
-        if ($this->content === null) {
-            return null;
-        }
-        $start = $range->start->toOffset($this->content);
-        $length = $range->end->toOffset($this->content) - $start;
-        return substr($this->content, $start, $length);
+        $content = $this->getContent();
+        $start = $range->start->toOffset($content);
+        $length = $range->end->toOffset($content) - $start;
+        return substr($content, $start, $length);
     }
 
     /**
